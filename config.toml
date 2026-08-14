@@ -1,0 +1,26 @@
+# fancontrold config
+# Restart the service after editing: sudo systemctl restart fancontrold
+
+poll_interval = 3          # seconds between checks
+watchdog_timeout = 30       # ACPI safety net: if we crash, fan reverts to auto after this many seconds
+hysteresis = 3               # degrees C of "give" before dropping a fan level, to stop flapping
+
+# temp (C) -> fan level (0-7). Keep temps ascending.
+curve = [
+  [0, 0],
+  [50, 1],
+  [58, 2],
+  [65, 3],
+  [72, 4],
+  [78, 5],
+  [85, 6],
+  [92, 7],
+]
+
+# Process throttling: when temp crosses throttle_temp, listed processes
+# get renice'd to throttle_nice. They're restored to normal priority
+# once temp drops back below throttle_recover_temp.
+throttle_temp = 80
+throttle_recover_temp = 72
+throttle_nice = 15
+throttle_processes = []   # e.g. ["chromium", "code", "firefox"]
