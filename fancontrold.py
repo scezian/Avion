@@ -43,12 +43,17 @@ DEFAULT_CONFIG = {
         [0, 0],
         [50, 1],
         [58, 2],
-        [65, 3],
-        [72, 4],
-        [78, 5],
-        [85, 6],
-        [92, 7],
+        [60, 3],
+        [64, 4],
+        [71, 5],
+        [77, 6],
+        [80, 7],
     ],
+    # Above this temp, auto mode forces full-speed regardless of the curve
+    # above (separate mechanism since full-speed isn't a numbered level).
+    # Drops back to curve control once temp falls hysteresis degrees below
+    # this, to avoid flapping right at the boundary. Set to None to disable.
+    "auto_full_speed_temp": 86,
     "throttle_temp": 75,       # start renicing configured processes above this
     "throttle_recover_temp": 68,  # stop renicing once back below this
     "throttle_nice": 15,
@@ -217,17 +222,15 @@ def get_top_processes_snapshot(limit=5):
 
 
 def relax_dir_permissions(path):
-    """Let the 'fancontrol' group manage a directory the daemon creates as
-    root - so log folders (which may live outside /var/log, e.g. inside a
-    project folder) aren't locked to root-only for a user who just wants to
-    read/delete/move their own logs without sudo."""
+    """Make a directory the daemon creates as root manageable by the
+    logged-in user without sudo (read, delete, move logs, etc). Kept simple
+    and world-writable rather than routed through a dedicated group, since
+    group-based tightening previously caused GUI writes to silently fail
+    for sessions that hadn't picked up the group membership yet."""
     try:
-        import grp
-        gid = grp.getgrnam("fancontrol").gr_gid
-        os.chown(path, -1, gid)
-        os.chmod(path, 0o775)
+        os.chmod(path, 0o777)
     except Exception:
-        pass  # fancontrol group not set up yet - falls back to root-owned, still readable via 0644 file perms
+        pass
 
 
 def log_spike(cfg, temp, level, rate):
@@ -304,23 +307,15 @@ def main():
         MODE_FILE.write_text("auto")
     if not LEVEL_FILE.exists():
         LEVEL_FILE.write_text("auto")
+    # World-writable and left that way deliberately - this is what lets the
+    # GUI (running as a normal user) flip modes without sudo. A previous
+    # version of this code tried to narrow this down to a dedicated
+    # 'fancontrol' group instead, but that silently broke GUI writes for
+    # any session that hadn't picked up the group membership yet, which is
+    # worse than the small tradeoff of a world-writable file on a personal
+    # single-user laptop.
     os.chmod(MODE_FILE, 0o666)
     os.chmod(LEVEL_FILE, 0o666)
-
-    # Let the fancontrol group read/write these without sudo, so the
-    # dashboard GUI (running as a normal user) can flip modes directly.
-    try:
-        import grp
-        gid = grp.getgrnam("fancontrol").gr_gid
-        os.chown(MODE_FILE.parent, -1, gid)
-        os.chmod(MODE_FILE.parent, 0o775)
-        for f in (MODE_FILE, LEVEL_FILE):
-            os.chown(f, -1, gid)
-            os.chmod(f, 0o664)
-    except KeyError:
-        LOG.warning("fancontrol group not found - GUI will need sudo to "
-                    "change modes. Run: sudo groupadd fancontrol && "
-                    "sudo usermod -aG fancontrol $USER")
 
     temp_input = find_package_temp_input()
     LOG.info("Using temp sensor: %s", temp_input)
@@ -331,7 +326,10 @@ def main():
 
     current_level = 0
     is_hot = False
+    auto_full_speed_active = False
     temp_history = deque(maxlen=60)
+    last_mode = None
+    last_manual_level_logged = None
 
     def handle_exit(signum, frame):
         LOG.info("Exiting, handing control back to auto")
@@ -352,28 +350,58 @@ def main():
 
             if mode == "manual":
                 lvl = read_manual_level()
+                if last_mode != "manual" or lvl != last_manual_level_logged:
+                    LOG.info("Manual mode: setting fan level to %s", lvl)
+                    last_manual_level_logged = lvl
                 set_fan_level(lvl)
             else:
-                base_level = level_for_temp(
-                    cfg["curve"], temp, current_level, cfg["hysteresis"]
+                if last_mode == "manual":
+                    LOG.info("Back to auto mode")
+                    last_manual_level_logged = None
+
+                full_speed_temp = cfg.get("auto_full_speed_temp")
+                full_speed_recover = (
+                    full_speed_temp - cfg["hysteresis"] if full_speed_temp else None
                 )
 
-                rate = compute_rate(temp_history, cfg["ramp_rate_window"])
-                projected_rise = rate * cfg["ramp_rate_window"]
-                ramping = projected_rise >= cfg["ramp_rate_threshold"]
-                if ramping:
-                    base_level = min(7, base_level + cfg["ramp_boost_levels"])
-                    LOG.info("Ramping ahead: temp rising %.1fC/%ss, boosting to level %s",
-                              projected_rise, cfg["ramp_rate_window"], base_level)
+                if full_speed_temp and temp >= full_speed_temp:
+                    if not auto_full_speed_active:
+                        LOG.info("Temp %.1fC crossed auto full-speed threshold (%s), "
+                                 "forcing full-speed", temp, full_speed_temp)
+                        auto_full_speed_active = True
+                    set_fan_level("full-speed")
+                    current_level = 7  # keep in sync for curve hysteresis once we drop back
+                elif auto_full_speed_active and full_speed_recover and temp > full_speed_recover:
+                    # still cooling through the hysteresis band - hold full-speed
+                    # rather than dropping straight back to the curve and flapping
+                    set_fan_level("full-speed")
+                    current_level = 7
+                else:
+                    if auto_full_speed_active:
+                        LOG.info("Temp %.1fC recovered below auto full-speed threshold, "
+                                 "returning to curve control", temp)
+                        auto_full_speed_active = False
 
-                floor = app_profile_floor(cfg)
-                target_level = max(base_level, floor)
+                    base_level = level_for_temp(
+                        cfg["curve"], temp, current_level, cfg["hysteresis"]
+                    )
 
-                if target_level - current_level >= cfg.get("spike_level_jump", 2):
-                    log_spike(cfg, temp, target_level, rate)
+                    rate = compute_rate(temp_history, cfg["ramp_rate_window"])
+                    projected_rise = rate * cfg["ramp_rate_window"]
+                    ramping = projected_rise >= cfg["ramp_rate_threshold"]
+                    if ramping:
+                        base_level = min(7, base_level + cfg["ramp_boost_levels"])
+                        LOG.info("Ramping ahead: temp rising %.1fC/%ss, boosting to level %s",
+                                  projected_rise, cfg["ramp_rate_window"], base_level)
 
-                current_level = target_level
-                set_fan_level(current_level)
+                    floor = app_profile_floor(cfg)
+                    target_level = max(base_level, floor)
+
+                    if target_level - current_level >= cfg.get("spike_level_jump", 2):
+                        log_spike(cfg, temp, target_level, rate)
+
+                    current_level = target_level
+                    set_fan_level(current_level)
 
             # process throttling only applies in auto mode
             if mode == "auto":
@@ -390,11 +418,13 @@ def main():
             # re-arm watchdog each loop so it never fires while we're alive
             set_watchdog(cfg["watchdog_timeout"])
 
+            last_mode = mode
+
             LOG.debug("temp=%.1fC mode=%s level=%s hot=%s",
                        temp, mode, current_level, is_hot)
 
-        except Exception as e:
-            LOG.error("loop error: %s", e)
+        except Exception:
+            LOG.exception("loop error")
 
         time.sleep(cfg["poll_interval"])
 

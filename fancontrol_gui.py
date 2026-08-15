@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSlider, QLineEdit, QSystemTrayIcon, QMenu,
     QFrame, QSizePolicy, QGridLayout, QLayout, QDialog, QListWidget,
-    QListWidgetItem
+    QListWidgetItem, QButtonGroup
 )
 
 CONFIG_PATH = Path("/etc/fancontrold/config.toml")
@@ -677,31 +677,33 @@ class MainWindow(QMainWindow):
             b.setStyleSheet(self._toggle_style())
         self.auto_btn.setChecked(True)
         self.auto_btn.clicked.connect(self.set_auto)
-        self.manual_btn.clicked.connect(lambda: self.set_manual(self.level_slider.value()))
+        self.manual_btn.clicked.connect(self.enter_manual_mode)
         toggle_layout.addWidget(self.auto_btn)
         toggle_layout.addWidget(self.manual_btn)
         control_card.layout_.addWidget(toggle_wrap)
 
-        slider_head = QHBoxLayout()
-        slider_cap = QLabel("Level")
-        slider_cap.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
-        self.slider_label = QLabel("0")
-        self.slider_label.setStyleSheet(f"color: {TEXT}; font-size: 11px; font-weight: 600;")
-        slider_head.addWidget(slider_cap)
-        slider_head.addStretch()
-        slider_head.addWidget(self.slider_label)
-        self.slider_wrap = QWidget()
-        sw_layout = QVBoxLayout(self.slider_wrap)
-        sw_layout.setContentsMargins(0, 0, 0, 0)
-        sw_layout.setSpacing(2)
-        sw_layout.addLayout(slider_head)
-        self.level_slider = QSlider(Qt.Horizontal)
-        self.level_slider.setRange(0, 7)
-        self.level_slider.setStyleSheet(self._slider_style())
-        self.level_slider.valueChanged.connect(self.on_slider_change)
-        sw_layout.addWidget(self.level_slider)
-        self.slider_wrap.setEnabled(False)
-        control_card.layout_.addWidget(self.slider_wrap)
+        level_cap = QLabel("Level")
+        level_cap.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        control_card.layout_.addWidget(level_cap)
+
+        self.level_row_wrap = QWidget()
+        level_row = QHBoxLayout(self.level_row_wrap)
+        level_row.setContentsMargins(0, 0, 0, 0)
+        level_row.setSpacing(4)
+        self.level_btn_group = QButtonGroup(self)
+        self.level_btn_group.setExclusive(True)
+        self.level_buttons = {}
+        for lvl in range(1, 8):
+            b = QPushButton(str(lvl))
+            b.setCheckable(True)
+            b.setFixedHeight(30)
+            b.setStyleSheet(self._toggle_style())
+            b.clicked.connect(lambda checked=False, l=lvl: self.set_manual(l))
+            self.level_btn_group.addButton(b)
+            self.level_buttons[lvl] = b
+            level_row.addWidget(b)
+        self.level_row_wrap.setEnabled(False)
+        control_card.layout_.addWidget(self.level_row_wrap)
 
         extra_row = QHBoxLayout()
         extra_row.setSpacing(8)
@@ -809,20 +811,6 @@ class MainWindow(QMainWindow):
             QPushButton:hover {{ border-color: {ACCENT}; }}
         """
 
-    def _slider_style(self):
-        return f"""
-            QSlider::groove:horizontal {{
-                height: 5px; background: {BORDER}; border-radius: 2px;
-            }}
-            QSlider::sub-page:horizontal {{
-                background: {ACCENT}; border-radius: 2px;
-            }}
-            QSlider::handle:horizontal {{
-                background: white; width: 15px; height: 15px;
-                margin: -5px 0; border-radius: 7px; border: 2px solid {ACCENT};
-            }}
-        """
-
     def _make_icon(self, color_hex):
         pix = QPixmap(32, 32)
         pix.fill(Qt.transparent)
@@ -851,7 +839,16 @@ class MainWindow(QMainWindow):
         MODE_FILE.write_text("auto")
         self.auto_btn.setChecked(True)
         self.manual_btn.setChecked(False)
-        self.slider_wrap.setEnabled(False)
+        self.level_row_wrap.setEnabled(False)
+        self._uncheck_all_level_buttons()
+
+    def enter_manual_mode(self):
+        # Just switches the UI into manual-selection mode - doesn't write
+        # anything to the daemon until an actual level is picked, so this
+        # button alone never silently changes the fan.
+        self.auto_btn.setChecked(False)
+        self.manual_btn.setChecked(True)
+        self.level_row_wrap.setEnabled(True)
 
     def set_manual(self, level):
         self._cancel_full_speed_timer()
@@ -860,11 +857,17 @@ class MainWindow(QMainWindow):
         MODE_FILE.write_text("manual")
         self.auto_btn.setChecked(False)
         self.manual_btn.setChecked(True)
-        self.slider_wrap.setEnabled(True)
-        if isinstance(level, int):
-            self.level_slider.blockSignals(True)
-            self.level_slider.setValue(level)
-            self.level_slider.blockSignals(False)
+        self.level_row_wrap.setEnabled(True)
+        if isinstance(level, int) and level in self.level_buttons:
+            self.level_buttons[level].setChecked(True)
+        else:
+            self._uncheck_all_level_buttons()
+
+    def _uncheck_all_level_buttons(self):
+        self.level_btn_group.setExclusive(False)
+        for b in self.level_buttons.values():
+            b.setChecked(False)
+        self.level_btn_group.setExclusive(True)
 
     def open_full_speed_picker(self):
         dialog = FullSpeedDurationDialog(self)
@@ -878,7 +881,8 @@ class MainWindow(QMainWindow):
         MODE_FILE.write_text("manual")
         self.auto_btn.setChecked(False)
         self.manual_btn.setChecked(True)
-        self.slider_wrap.setEnabled(True)
+        self.level_row_wrap.setEnabled(True)
+        self._uncheck_all_level_buttons()
 
         self.full_speed_remaining = seconds
         self.full_speed_timer.start(seconds * 1000)
@@ -902,11 +906,6 @@ class MainWindow(QMainWindow):
         self.full_speed_timer.stop()
         self.full_speed_countdown_timer.stop()
         self.full_speed_label.setVisible(False)
-
-    def on_slider_change(self, value):
-        self.slider_label.setText(str(value))
-        if self.manual_btn.isChecked():
-            self.set_manual(value)
 
     def _add_chip(self, name):
         chip = Chip(name, self._remove_chip)

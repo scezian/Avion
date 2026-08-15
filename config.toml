@@ -10,12 +10,19 @@ curve = [
   [0, 0],
   [50, 1],
   [58, 2],
-  [65, 3],
-  [72, 4],
-  [78, 5],
-  [85, 6],
-  [92, 7],
+  [60, 3],
+  [64, 4],
+  [71, 5],
+  [77, 6],
+  [80, 7],
 ]
+
+# Above this temp, auto mode forces full-speed regardless of the curve
+# above (full-speed isn't one of the numbered 0-7 levels, so this is a
+# separate mechanism layered on top). Drops back to curve control once
+# temp falls `hysteresis` degrees below this, to avoid flapping right at
+# the boundary. Comment out or remove to disable.
+auto_full_speed_temp = 86
 
 # Process throttling: when temp crosses throttle_temp, listed processes
 # get renice'd to throttle_nice. They're restored to normal priority
@@ -38,8 +45,17 @@ ramp_boost_levels = 2
 # run hot, so the fan ramps before they've made you hot rather than
 # after. Use the spike log below to see which apps actually deserve
 # an entry here.
+#
+# These two were added based on ~5 hours of real spike log data on
+# 2026-08-15: spotify was the #1 process in the large majority of
+# spikes (285 appearances, sustained 15:50-20:00, repeatedly hitting
+# level 6-7 / 78-85C), firefox drove the earlier, milder spikes
+# (152 appearances, level 3-4 / 56-60C). quickshell and Hyprland also
+# showed up constantly but never as the #1 process in any single spike
+# - steady background overhead, not an actual driver - so left out.
 app_profiles = [
-  # { process = "chromium", min_level = 3 },
+  { process = "spotify", min_level = 4 },
+  { process = "firefox", min_level = 3 },
 ]
 
 # Spike attribution logging: whenever the fan level jumps by at least
@@ -47,13 +63,13 @@ app_profiles = [
 # moment and append them to spike_log_path as JSON lines. Read it with:
 #   tail -f /var/log/fancontrold/spikes.jsonl | jq .
 spike_log_enabled = true
-spike_log_path = "/var/log/fancontrold/spikes.jsonl"
+spike_log_path = "/home/scez/Projects/Avion/logs/spikes.jsonl"
 spike_level_jump = 2
 
 # Regular daemon activity log (separate from the spike log above) - this is
 # the same info journalctl shows, just also kept as a plain file so it
 # survives systemd's journal rotation/vacuuming and is easy to grep:
-#   tail -f /var/log/fancontrold/fancontrold.log
+#   tail -f ~/Projects/Avion/logs/fancontrold.log
 # Rotates daily at midnight, keeping log_retention_days worth of history.
-log_path = "/var/log/fancontrold/fancontrold.log"
+log_path = "/home/scez/Projects/Avion/logs/fancontrold.log"
 log_retention_days = 7
