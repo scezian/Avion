@@ -588,6 +588,22 @@ class MainWindow(QMainWindow):
         header.addStretch()
         self.watchdog_pill = Pill(f"Watchdog · {self.cfg['watchdog_timeout']}s")
         header.addWidget(self.watchdog_pill)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(22, 22)
+        close_btn.setToolTip("Quit")
+        close_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: transparent; color: {TEXT_MUTED}; border: none;
+                border-radius: 5px; font-size: 13px; font-weight: 600;
+            }}
+            QPushButton:hover {{ background-color: {RED}; color: white; }}
+            """
+        )
+        close_btn.clicked.connect(self.hide)
+        header.addSpacing(8)
+        header.addWidget(close_btn)
         outer.addLayout(header)
 
         # stat row
