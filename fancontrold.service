@@ -1,0 +1,15 @@
+[Unit]
+Description=ThinkPad temperature-based fan control daemon
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fancontrold.py
+Restart=always
+RestartSec=5
+RuntimeDirectory=fancontrold
+RuntimeDirectoryMode=0777
+User=root
+
+[Install]
+WantedBy=multi-user.target

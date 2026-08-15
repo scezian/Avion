@@ -1,0 +1,59 @@
+# fancontrold config
+# Restart the service after editing: sudo systemctl restart fancontrold
+
+poll_interval = 3          # seconds between checks
+watchdog_timeout = 30       # ACPI safety net: if we crash, fan reverts to auto after this many seconds
+hysteresis = 3               # degrees C of "give" before dropping a fan level, to stop flapping
+
+# temp (C) -> fan level (0-7). Keep temps ascending.
+curve = [
+  [0, 0],
+  [50, 1],
+  [58, 2],
+  [65, 3],
+  [72, 4],
+  [78, 5],
+  [85, 6],
+  [92, 7],
+]
+
+# Process throttling: when temp crosses throttle_temp, listed processes
+# get renice'd to throttle_nice. They're restored to normal priority
+# once temp drops back below throttle_recover_temp.
+throttle_temp = 75
+throttle_recover_temp = 68
+throttle_nice = 15
+throttle_processes = []   # e.g. ["chromium", "code"]
+
+# Rate-of-change ramping: if temp rises by ramp_rate_threshold degrees
+# or more within ramp_rate_window seconds, the fan jumps ramp_boost_levels
+# above what the static curve alone would give it - so it's ahead of a
+# fast spike instead of one poll behind it.
+ramp_rate_window = 10
+ramp_rate_threshold = 3.0
+ramp_boost_levels = 2
+
+# App-aware profiles: force a minimum fan level whenever a listed
+# process is running, regardless of temp - useful for apps you know
+# run hot, so the fan ramps before they've made you hot rather than
+# after. Use the spike log below to see which apps actually deserve
+# an entry here.
+app_profiles = [
+  # { process = "chromium", min_level = 3 },
+]
+
+# Spike attribution logging: whenever the fan level jumps by at least
+# spike_level_jump in one poll, snapshot the top CPU processes at that
+# moment and append them to spike_log_path as JSON lines. Read it with:
+#   tail -f /var/log/fancontrold/spikes.jsonl | jq .
+spike_log_enabled = true
+spike_log_path = "/var/log/fancontrold/spikes.jsonl"
+spike_level_jump = 2
+
+# Regular daemon activity log (separate from the spike log above) - this is
+# the same info journalctl shows, just also kept as a plain file so it
+# survives systemd's journal rotation/vacuuming and is easy to grep:
+#   tail -f /var/log/fancontrold/fancontrold.log
+# Rotates daily at midnight, keeping log_retention_days worth of history.
+log_path = "/var/log/fancontrold/fancontrold.log"
+log_retention_days = 7

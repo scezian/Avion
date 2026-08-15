@@ -1,0 +1,15 @@
+# Machine-specific logs (root-owned, not portable)
+logs/
+*.jsonl
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Editor/OS cruft
+.DS_Store
+*.swp
